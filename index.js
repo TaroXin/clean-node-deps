@@ -92,8 +92,9 @@ async function removeNodeModules(dir, currentWorkingDir) {
 
 program
   .name('clean-node-deps')
-  .description('用来清除当前文件夹以及嵌套所有子文件夹下的依赖目录, 如 node_modules')
+  .description(packageJson.description)
   .version(packageJson.version, '-v, --version', '显示版本号')
+  .option('-c, --clean', '执行清除操作（默认行为）')
   .option('-y, --yes', '不询问，直接删除所有发现的 node_modules')
   .action(async (options) => {
     const cwd = process.cwd();

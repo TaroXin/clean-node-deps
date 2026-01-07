@@ -1,6 +1,6 @@
 {
   "name": "clean-node-deps",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "用来清除当前文件夹以及嵌套所有子文件夹下的依赖目录, 如 node_modules",
   "main": "index.js",
   "bin": {
