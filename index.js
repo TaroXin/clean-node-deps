@@ -10,6 +10,16 @@ const packageJson = require('./package.json');
 const program = new Command();
 
 async function isMonorepo(rootDir) {
+  // 首先检查是否有 pnpm-workspace.yaml（pnpm 的 monorepo 标识）
+  const pnpmWorkspacePath = path.join(rootDir, 'pnpm-workspace.yaml');
+  try {
+    await fs.promises.access(pnpmWorkspacePath);
+    return true;
+  } catch {
+    // 文件不存在，继续检查
+  }
+
+  // 检查 package.json
   const packageJsonPath = path.join(rootDir, 'package.json');
   try {
     const packageJsonContent = await fs.promises.readFile(packageJsonPath, 'utf-8');
@@ -20,28 +30,24 @@ async function isMonorepo(rootDir) {
       return true;
     }
 
-    // 检查是否有 pnpm-workspace.yaml
-    const pnpmWorkspacePath = path.join(rootDir, 'pnpm-workspace.yaml');
-    try {
-      await fs.promises.access(pnpmWorkspacePath);
+    // 检查是否有 pnpm.workspaces 字段（pnpm 的另一种配置方式）
+    if (packageJson.pnpm && packageJson.pnpm.workspaces) {
       return true;
-    } catch {
-      // 文件不存在，继续检查
     }
-
-    // 检查是否有 lerna.json
-    const lernaPath = path.join(rootDir, 'lerna.json');
-    try {
-      await fs.promises.access(lernaPath);
-      return true;
-    } catch {
-      // 文件不存在
-    }
-
-    return false;
   } catch (err) {
-    return false;
+    // package.json 不存在或解析失败，继续检查其他标识
   }
+
+  // 检查是否有 lerna.json
+  const lernaPath = path.join(rootDir, 'lerna.json');
+  try {
+    await fs.promises.access(lernaPath);
+    return true;
+  } catch {
+    // 文件不存在
+  }
+
+  return false;
 }
 
 async function findProjectsWithNodeModules(rootDir) {
@@ -154,9 +160,6 @@ program
 
     async function main() {
       console.log(chalk.cyan(`开始扫描: ${cwd}`));
-
-      // 检查是否是 monorepo
-      const isMonorepoRoot = await isMonorepo(cwd);
       const projects = await findProjectsWithNodeModules(cwd);
 
       if (projects.length === 0) {
@@ -166,26 +169,52 @@ program
 
       const rl = autoYes ? null : createPrompt();
 
-      // 如果是 monorepo，只询问一次
-      if (isMonorepoRoot) {
-        const confirmed = autoYes ? true : await shouldDeleteMonorepo(cwd, projects.length, rl, cwd);
-        if (confirmed) {
-          for (const dir of projects) {
-            await removeNodeModules(dir, cwd);
+      // 用于跟踪已处理的 monorepo 根目录，避免重复处理
+      const processedMonorepos = new Set();
+      const processedProjects = new Set();
+
+      for (const dir of projects) {
+        // 如果这个项目已经在某个 monorepo 中被处理过，跳过
+        if (processedProjects.has(dir)) {
+          continue;
+        }
+
+        // 检查当前项目目录是否是 monorepo
+        const isMonorepoRoot = await isMonorepo(dir);
+
+        if (isMonorepoRoot && !processedMonorepos.has(dir)) {
+          // 找到这个 monorepo 下的所有子项目的 node_modules
+          const monorepoProjects = projects.filter(p => {
+            // 检查项目是否在这个 monorepo 目录下（包括 monorepo 根目录本身）
+            if (p === dir) return true;
+            const relative = path.relative(dir, p);
+            return relative && !relative.startsWith('..') && !path.isAbsolute(relative);
+          });
+
+          processedMonorepos.add(dir);
+          monorepoProjects.forEach(p => processedProjects.add(p));
+
+          // 只询问一次这个 monorepo
+          const confirmed = autoYes ? true : await shouldDeleteMonorepo(dir, monorepoProjects.length, rl, cwd);
+          if (confirmed) {
+            for (const projectDir of monorepoProjects) {
+              await removeNodeModules(projectDir, cwd);
+            }
+          } else {
+            console.log(chalk.gray(`[跳过] monorepo: ${formatPath(dir, cwd)}`));
           }
         } else {
-          console.log(chalk.gray(`[跳过] monorepo: ${formatPath(cwd, cwd)}`));
-        }
-      } else {
-        // 非 monorepo，保持原有行为，逐个询问
-        for (const dir of projects) {
-          const confirmed = autoYes ? true : await shouldDelete(dir, rl, cwd);
-          if (confirmed) {
-            await removeNodeModules(dir, cwd);
-          } else {
-            console.log(
-              chalk.gray(`[跳过] ${formatPath(dir, cwd)}`)
-            );
+          // 非 monorepo 或已处理过的项目，逐个询问
+          if (!processedProjects.has(dir)) {
+            processedProjects.add(dir);
+            const confirmed = autoYes ? true : await shouldDelete(dir, rl, cwd);
+            if (confirmed) {
+              await removeNodeModules(dir, cwd);
+            } else {
+              console.log(
+                chalk.gray(`[跳过] ${formatPath(dir, cwd)}`)
+              );
+            }
           }
         }
       }
