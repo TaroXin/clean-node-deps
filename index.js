@@ -9,6 +9,41 @@ const packageJson = require('./package.json');
 
 const program = new Command();
 
+async function isMonorepo(rootDir) {
+  const packageJsonPath = path.join(rootDir, 'package.json');
+  try {
+    const packageJsonContent = await fs.promises.readFile(packageJsonPath, 'utf-8');
+    const packageJson = JSON.parse(packageJsonContent);
+
+    // 检查是否有 workspaces 字段（支持 npm/yarn/pnpm）
+    if (packageJson.workspaces) {
+      return true;
+    }
+
+    // 检查是否有 pnpm-workspace.yaml
+    const pnpmWorkspacePath = path.join(rootDir, 'pnpm-workspace.yaml');
+    try {
+      await fs.promises.access(pnpmWorkspacePath);
+      return true;
+    } catch {
+      // 文件不存在，继续检查
+    }
+
+    // 检查是否有 lerna.json
+    const lernaPath = path.join(rootDir, 'lerna.json');
+    try {
+      await fs.promises.access(lernaPath);
+      return true;
+    } catch {
+      // 文件不存在
+    }
+
+    return false;
+  } catch (err) {
+    return false;
+  }
+}
+
 async function findProjectsWithNodeModules(rootDir) {
   const projects = [];
   const stack = [rootDir];
@@ -76,6 +111,23 @@ async function shouldDelete(dir, rl, currentWorkingDir) {
   });
 }
 
+async function shouldDeleteMonorepo(rootDir, projectCount, rl, currentWorkingDir) {
+  const question = chalk.yellow(
+    `发现 ${formatPath(rootDir, currentWorkingDir)} 是一个 monorepo，共找到 ${projectCount} 个项目包含 node_modules，是否全部删除（Y/n）：`
+  );
+
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      const trimmed = answer.trim();
+      if (trimmed === '' || /^[yY]$/.test(trimmed)) {
+        resolve(true);
+      } else {
+        resolve(false);
+      }
+    });
+  });
+}
+
 async function removeNodeModules(dir, currentWorkingDir) {
   const target = path.join(dir, 'node_modules');
   try {
@@ -102,6 +154,9 @@ program
 
     async function main() {
       console.log(chalk.cyan(`开始扫描: ${cwd}`));
+
+      // 检查是否是 monorepo
+      const isMonorepoRoot = await isMonorepo(cwd);
       const projects = await findProjectsWithNodeModules(cwd);
 
       if (projects.length === 0) {
@@ -111,14 +166,27 @@ program
 
       const rl = autoYes ? null : createPrompt();
 
-      for (const dir of projects) {
-        const confirmed = autoYes ? true : await shouldDelete(dir, rl, cwd);
+      // 如果是 monorepo，只询问一次
+      if (isMonorepoRoot) {
+        const confirmed = autoYes ? true : await shouldDeleteMonorepo(cwd, projects.length, rl, cwd);
         if (confirmed) {
-          await removeNodeModules(dir, cwd);
+          for (const dir of projects) {
+            await removeNodeModules(dir, cwd);
+          }
         } else {
-          console.log(
-            chalk.gray(`[跳过] ${formatPath(dir, cwd)}`)
-          );
+          console.log(chalk.gray(`[跳过] monorepo: ${formatPath(cwd, cwd)}`));
+        }
+      } else {
+        // 非 monorepo，保持原有行为，逐个询问
+        for (const dir of projects) {
+          const confirmed = autoYes ? true : await shouldDelete(dir, rl, cwd);
+          if (confirmed) {
+            await removeNodeModules(dir, cwd);
+          } else {
+            console.log(
+              chalk.gray(`[跳过] ${formatPath(dir, cwd)}`)
+            );
+          }
         }
       }
 
